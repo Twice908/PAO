@@ -1,0 +1,27 @@
+{
+  "name": "@pulse/db",
+  "version": "0.0.1",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "db:generate": "prisma generate",
+    "db:push": "dotenv -e ../../.env -- prisma db push",
+    "db:migrate": "dotenv -e ../../.env -- prisma migrate dev",
+    "db:seed": "dotenv -e ../../.env -- prisma db seed"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.16.0"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^11.0.0",
+    "prisma": "^5.16.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  }
+}

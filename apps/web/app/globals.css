@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #0f172a;
+  --card: #f8fafc;
+  --card-foreground: #0f172a;
+  --border: #e2e8f0;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+}
+
+.dark {
+  --background: #0f172a;
+  --foreground: #f8fafc;
+  --card: #1e293b;
+  --card-foreground: #f8fafc;
+  --border: #334155;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --primary: #818cf8;
+  --primary-foreground: #0f172a;
+}
+
+@keyframes flash-new {
+  0% {
+    background-color: #eef2ff;
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@layer utilities {
+  .animate-flash-new {
+    animation: flash-new 1s ease-out;
+  }
+}
+
+/* Dark mode skeleton loader override */
+.dark .animate-pulse {
+  background-color: rgb(51 65 85) !important; /* slate-700 */
+}

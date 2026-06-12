@@ -1,0 +1,142 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Tenancy ──────────────────────────────────────────────────────────────────
+
+model User {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  clerkId   String    @unique
+  plan      Plan      @default(FREE)
+  projects  Project[]
+  createdAt DateTime  @default(now())
+}
+
+model Project {
+  id               String            @id @default(cuid())
+  name             String
+  apiKeyHash       String            @unique
+  apiKeyPrefix     String
+  userId           String
+  user             User              @relation(fields: [userId], references: [id])
+  alerts           Alert[]
+  alertEvents      AlertEvent[]
+  agentDefinitions AgentDefinition[]
+  agentRuns        AgentRun[]
+  createdAt        DateTime          @default(now())
+}
+
+enum Plan {
+  FREE
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+// ── Alerts ───────────────────────────────────────────────────────────────────
+
+model Alert {
+  id           String       @id @default(cuid())
+  projectId    String
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type         String
+  threshold    Float
+  channel      String
+  destination  String
+  active       Boolean      @default(true)
+  url          String?
+  route        String?
+  agentMetrics Json?
+  events       AlertEvent[]
+}
+
+model AlertEvent {
+  id             String    @id @default(cuid())
+  alertId        String?
+  projectId      String
+  type           String
+  triggeredValue Float
+  threshold      Float
+  message        String
+  channel        String
+  destination    String
+  sentAt         DateTime  @default(now())
+  agentRunId     String?
+
+  alert          Alert?    @relation(fields: [alertId], references: [id], onDelete: SetNull)
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agentRun       AgentRun? @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+}
+
+// ── PAO: Pulse Agent Observe ─────────────────────────────────────────────────
+
+model AgentDefinition {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String
+  role      String?
+  model     String?
+  createdAt DateTime @default(now())
+
+  project Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  spans   AgentSpan[]
+
+  @@unique([projectId, name])
+  @@index([projectId])
+}
+
+model AgentRun {
+  id           String    @id @default(cuid())
+  projectId    String
+  task         String
+  status       String    @default("running")
+  startedAt    DateTime  @default(now())
+  endedAt      DateTime?
+  totalTokens  Int?
+  totalCostUsd Decimal?  @db.Decimal(10, 6)
+  metadata     Json?
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  spans        AgentSpan[]
+  alertEvents  AlertEvent[]
+
+  @@index([projectId, startedAt])
+}
+
+model AgentSpan {
+  id                String   @default(cuid())
+  runId             String
+  projectId         String
+  agentDefinitionId String?
+  parentSpanId      String?
+  spanType          String
+  name              String
+  startedAt         DateTime
+  endedAt           DateTime?
+  durationMs        Int?
+  inputTokens       Int?
+  outputTokens      Int?
+  totalTokens       Int?
+  costUsd           Decimal? @db.Decimal(10, 6)
+  model             String?
+  inputPreview      String?  @db.Text
+  outputPreview     String?  @db.Text
+  statusCode        String?
+  errorMessage      String?
+  metadata          Json?
+
+  run             AgentRun         @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agentDefinition AgentDefinition? @relation(fields: [agentDefinitionId], references: [id], onDelete: SetNull)
+
+  // Composite PK required by TimescaleDB: every unique index must include
+  // the partition column (startedAt). A plain @id on `id` alone would fail.
+  @@id([id, startedAt])
+  @@index([runId, startedAt])
+  @@index([projectId, startedAt])
+}
