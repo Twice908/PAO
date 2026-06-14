@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAlerts, useAlertHistory } from '@/hooks/useAlerts'
+import { useProjects } from '@/hooks/useProjects'
 import type { AlertRule, AlertChannel, AlertHistoryEntry } from '@pulse/types'
 
 // PAO ships only the three agent alert types.
@@ -517,7 +518,8 @@ function HistoryRow({ entry, projectId, onDeleteRequest, confirmId, deletingId, 
 export default function AlertsPage() {
   const searchParams = useSearchParams()
   const queryClient = useQueryClient()
-  const projectId = searchParams.get('project') ?? ''
+  const { data: projects, isLoading: projectsLoading } = useProjects()
+  const projectId = searchParams.get('project') ?? projects[0]?.id ?? ''
 
   const { data: alerts, isLoading } = useAlerts(projectId)
   const [historyPage, setHistoryPage] = useState(1)
@@ -558,10 +560,10 @@ export default function AlertsPage() {
   const deleting = deleteMutation.isPending ? deleteMutation.variables ?? null : null
   const deletingHistory = deleteHistoryMutation.isPending ? deleteHistoryMutation.variables ?? null : null
 
-  if (!projectId) {
+  if (!projectsLoading && projects.length === 0) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-gray-400">Select a project to manage alerts.</p>
+        <p className="text-sm text-gray-400">Create a project to manage alerts.</p>
       </div>
     )
   }
@@ -602,7 +604,7 @@ export default function AlertsPage() {
         ) : alerts.length === 0 ? (
           <div className="rounded-xl border border-dashed border-gray-300 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 p-10 text-center">
             <p className="text-sm font-medium text-gray-500 dark:text-slate-400">No alert rules configured</p>
-            <p className="text-xs text-gray-400 dark:text-slate-500 mt-1">Click "Add Alert Rule" to get started</p>
+            <p className="text-xs text-gray-400 dark:text-slate-500 mt-1">Click &quot;Add Alert Rule&quot; to get started</p>
           </div>
         ) : (
           <div className="space-y-3">

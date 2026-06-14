@@ -1,8 +1,13 @@
 'use client'
 
+import { useState } from 'react'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
+import { useQueryClient } from '@tanstack/react-query'
+import { Plus } from 'lucide-react'
 import RunStatusBadge from '@/components/agents/RunStatusBadge'
+import CreateProjectModal from '@/components/CreateProjectModal'
 import { useAgentRuns } from '@/hooks/useAgents'
+import { useProjects, PROJECTS_KEY } from '@/hooks/useProjects'
 import { relativeTime } from '@/lib/utils'
 
 function formatDuration(startedAt: string, endedAt: string | null): string {
@@ -27,8 +32,12 @@ export default function AgentsPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
+  const queryClient = useQueryClient()
 
-  const projectId = searchParams.get('project') ?? ''
+  const { data: projects, isLoading: projectsLoading } = useProjects()
+  const [showCreateModal, setShowCreateModal] = useState(false)
+
+  const projectId = searchParams.get('project') ?? projects[0]?.id ?? ''
   const statusFilter = searchParams.get('status') ?? 'all'
   const page = Math.max(1, parseInt(searchParams.get('page') ?? '1'))
 
@@ -56,16 +65,39 @@ export default function AgentsPage() {
     router.replace(`${pathname}?${params.toString()}`)
   }
 
+  function handleProjectCreated(newProjectId: string) {
+    queryClient.invalidateQueries({ queryKey: PROJECTS_KEY })
+    const p = new URLSearchParams(searchParams.toString())
+    p.set('project', newProjectId)
+    p.delete('page')
+    router.replace(`${pathname}?${p.toString()}`)
+  }
+
   function goToRun(runId: string) {
     const p = new URLSearchParams()
     if (projectId) p.set('project', projectId)
     router.push(`/dashboard/agents/${runId}?${p.toString()}`)
   }
 
-  if (!projectId) {
+  if (!projectsLoading && projects.length === 0) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-gray-400 dark:text-slate-500">Select a project from the sidebar.</p>
+        <div className="text-center space-y-4">
+          <p className="text-sm text-gray-400 dark:text-slate-500">No projects yet</p>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg hover:bg-indigo-500 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            Create a new project
+          </button>
+        </div>
+        {showCreateModal && (
+          <CreateProjectModal
+            onClose={() => setShowCreateModal(false)}
+            onCreated={handleProjectCreated}
+          />
+        )}
       </div>
     )
   }
@@ -79,7 +111,21 @@ export default function AgentsPage() {
             All agent executions tracked for this project
           </p>
         </div>
+        <button
+          onClick={() => setShowCreateModal(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors"
+        >
+          <Plus className="h-4 w-4" />
+          New project
+        </button>
       </div>
+
+      {showCreateModal && (
+        <CreateProjectModal
+          onClose={() => setShowCreateModal(false)}
+          onCreated={handleProjectCreated}
+        />
+      )}
 
       {/* Status filter bar */}
       <div className="flex items-center gap-3">

@@ -1,15 +1,9 @@
 'use client'
 
-import { useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { UserButton } from '@clerk/nextjs'
-import { Bell, Cpu, Plus, Settings } from 'lucide-react'
-import type { ProjectSummary } from '@pulse/types'
-import CreateProjectModal from './CreateProjectModal'
-
-interface SidebarProps {
-  projects: ProjectSummary[]
-}
+import { Bell, Cpu, Settings } from 'lucide-react'
+import { useProjects } from '@/hooks/useProjects'
 
 // PAO standalone only ships the Agents views. (In the full Pulse dashboard this
 // list also includes Logs, Analytics, Errors, Alerts, Uptime, Rate Limiter,
@@ -23,12 +17,12 @@ const NAV_ITEMS: Array<
   { label: 'Settings', href: '/dashboard/settings', icon: Settings },
 ]
 
-export default function Sidebar({ projects }: SidebarProps) {
+export default function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
   const searchParams = useSearchParams()
+  const { data: projects } = useProjects()
   const selectedProjectId = searchParams.get('project') ?? projects[0]?.id ?? ''
-  const [showCreateModal, setShowCreateModal] = useState(false)
 
   function navigate(href: string) {
     const params = new URLSearchParams()
@@ -48,7 +42,6 @@ export default function Sidebar({ projects }: SidebarProps) {
   }
 
   return (
-    <>
     <aside
       className="flex h-screen w-64 flex-shrink-0 flex-col"
       style={{ backgroundColor: '#0f1117' }}
@@ -63,17 +56,7 @@ export default function Sidebar({ projects }: SidebarProps) {
 
       {/* Project selector */}
       <div className="px-4 py-4 border-b border-white/10">
-        <div className="mb-2 flex items-center justify-between">
-          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Project</p>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            title="New project"
-            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            New
-          </button>
-        </div>
+        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-gray-500">Project</p>
         {projects.length > 0 ? (
           <select
             value={selectedProjectId}
@@ -136,8 +119,5 @@ export default function Sidebar({ projects }: SidebarProps) {
         />
       </div>
     </aside>
-
-    {showCreateModal && <CreateProjectModal onClose={() => setShowCreateModal(false)} />}
-    </>
   )
 }

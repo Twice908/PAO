@@ -20,12 +20,13 @@ const mockPrisma = vi.hoisted(() => ({
   agentRun: {
     upsert: vi.fn(),
     update: vi.fn(),
+    findUnique: vi.fn(),
   },
   agentDefinition: {
     upsert: vi.fn(),
   },
   agentSpan: {
-    createMany: vi.fn(),
+    upsert: vi.fn(),
     aggregate: vi.fn(),
   },
 }))
@@ -33,6 +34,23 @@ const mockPrisma = vi.hoisted(() => ({
 vi.mock('@pulse/db', () => ({
   prisma: mockPrisma,
   Prisma: {},
+}))
+
+vi.mock('../lib/redis', () => ({
+  redis: { publish: vi.fn() },
+}))
+
+vi.mock('../lib/alert-evaluator', () => ({
+  evaluateAgentRunAlerts: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('../env', () => ({
+  env: {
+    NODE_ENV: 'test',
+    DATABASE_URL: 'postgresql://localhost/test',
+    REDIS_URL: 'redis://localhost:6379',
+    RESEND_FROM_EMAIL: 'alerts@pulse.dev',
+  },
 }))
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -58,8 +76,9 @@ describe('processAgentSpan', () => {
     vi.clearAllMocks()
     mockPrisma.agentRun.upsert.mockResolvedValue({ id: RUN_ID })
     mockPrisma.agentRun.update.mockResolvedValue({ id: RUN_ID })
+    mockPrisma.agentRun.findUnique.mockResolvedValue(null)
     mockPrisma.agentDefinition.upsert.mockResolvedValue({ id: 'def-1' })
-    mockPrisma.agentSpan.createMany.mockResolvedValue({ count: 1 })
+    mockPrisma.agentSpan.upsert.mockResolvedValue({ id: SPAN_ID })
     mockPrisma.agentSpan.aggregate.mockResolvedValue({
       _sum: { totalTokens: 150, costUsd: 0.003 },
     })
@@ -142,15 +161,15 @@ describe('processAgentSpan', () => {
       costUsd: 0.002,
     }
 
-    it('inserts AgentSpan with skipDuplicates:true', async () => {
+    it('upserts AgentSpan keyed on id + startedAt', async () => {
       const job = makeJob(baseSpan)
 
       await processAgentSpan(job)
 
-      expect(mockPrisma.agentSpan.createMany).toHaveBeenCalledOnce()
-      const call = mockPrisma.agentSpan.createMany.mock.calls[0][0]
-      expect(call.skipDuplicates).toBe(true)
-      expect(call.data[0]).toMatchObject({
+      expect(mockPrisma.agentSpan.upsert).toHaveBeenCalledOnce()
+      const call = mockPrisma.agentSpan.upsert.mock.calls[0][0]
+      expect(call.where).toEqual({ id_startedAt: { id: SPAN_ID, startedAt: new Date(NOW) } })
+      expect(call.create).toMatchObject({
         id: SPAN_ID,
         runId: RUN_ID,
         projectId: PROJECT_ID,
@@ -195,12 +214,12 @@ describe('processAgentSpan', () => {
       expect(mockPrisma.agentDefinition.upsert).not.toHaveBeenCalled()
     })
 
-    it('duplicate span ID is silently ignored via skipDuplicates', async () => {
-      mockPrisma.agentSpan.createMany.mockResolvedValue({ count: 0 })
+    it('duplicate span ID is silently ignored via upsert update:{}', async () => {
       const job = makeJob(baseSpan)
 
       await expect(processAgentSpan(job)).resolves.toBeUndefined()
-      expect(mockPrisma.agentSpan.createMany).toHaveBeenCalledOnce()
+      expect(mockPrisma.agentSpan.upsert).toHaveBeenCalledOnce()
+      expect(mockPrisma.agentSpan.upsert.mock.calls[0][0].update).toEqual({})
     })
 
     it('logs warning and does not throw when runId is missing', async () => {
@@ -219,7 +238,7 @@ describe('processAgentSpan', () => {
         expect.objectContaining({ data: expect.any(Object) }),
         expect.stringContaining('missing runId'),
       )
-      expect(mockPrisma.agentSpan.createMany).not.toHaveBeenCalled()
+      expect(mockPrisma.agentSpan.upsert).not.toHaveBeenCalled()
     })
 
     it('computes durationMs from startedAt and endedAt', async () => {
@@ -229,7 +248,7 @@ describe('processAgentSpan', () => {
 
       await processAgentSpan(job)
 
-      const spanData = mockPrisma.agentSpan.createMany.mock.calls[0][0].data[0]
+      const spanData = mockPrisma.agentSpan.upsert.mock.calls[0][0].create
       expect(spanData.durationMs).toBe(1500)
     })
   })

@@ -6,9 +6,10 @@ import { X, Copy, Check } from 'lucide-react'
 
 interface Props {
   onClose: () => void
+  onCreated?: (projectId: string) => void
 }
 
-export default function CreateProjectModal({ onClose }: Props) {
+export default function CreateProjectModal({ onClose, onCreated }: Props) {
   const router = useRouter()
   const inputRef = useRef<HTMLInputElement>(null)
   const [name, setName] = useState('')
@@ -34,6 +35,7 @@ export default function CreateProjectModal({ onClose }: Props) {
       }
       setApiKey(json.data.apiKey)
       router.refresh()
+      onCreated?.(json.data.project.id)
     } catch {
       setError('Network error — please try again')
     } finally {

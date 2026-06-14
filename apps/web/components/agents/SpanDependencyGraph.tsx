@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
-import SpanDetailPanel, { type AgentSpanRow } from '@/components/agents/SpanDetailPanel'
+import { type AgentSpanRow } from '@/components/agents/SpanDetailPanel'
+import GraphScrollbar from '@/components/agents/GraphScrollbar'
 import GraphZoomControls from '@/components/agents/GraphZoomControls'
 import {
   type GraphEdge,
@@ -55,18 +56,9 @@ export default function SpanDependencyGraph({ spans }: SpanDependencyGraphProps)
   const isDark = resolvedTheme !== 'light'
 
   const layout = useMemo(() => layoutGraph(spans), [spans])
-  const sorted = useMemo(
-    () =>
-      [...spans].sort(
-        (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
-      ),
-    [spans],
-  )
 
-  // focusedId = first-click selection (highlights neighbours, shows outline)
-  // panelId = second-click (opens SpanDetailPanel)
+  // focusedId = click selection (highlights neighbours, shows outline)
   const [focusedId, setFocusedId] = useState<string | null>(null)
-  const [panelId, setPanelId] = useState<string | null>(null)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [tooltip, setTooltip] = useState<TooltipState | null>(null)
   const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -77,7 +69,6 @@ export default function SpanDependencyGraph({ spans }: SpanDependencyGraphProps)
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         setFocusedId(null)
-        setPanelId(null)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -88,21 +79,6 @@ export default function SpanDependencyGraph({ spans }: SpanDependencyGraphProps)
 
   const activeId = hoveredId ?? focusedId
   const neighbours = activeId ? directNeighbours(layout, activeId) : null
-
-  const panelIndex = panelId ? sorted.findIndex((s) => s.id === panelId) : -1
-  const selectedSpan = panelIndex >= 0 ? sorted[panelIndex] : null
-  const prevSpan = panelIndex > 0 ? sorted[panelIndex - 1] : null
-  const nextSpan =
-    panelIndex >= 0 && panelIndex < sorted.length - 1 ? sorted[panelIndex + 1] : null
-
-  function selectByDelta(delta: number) {
-    setPanelId((id) => {
-      const idx = id ? sorted.findIndex((s) => s.id === id) : -1
-      const next = idx + delta
-      if (next < 0 || next >= sorted.length) return id
-      return sorted[next].id
-    })
-  }
 
   function nodeOpacity(id: string): number {
     if (!neighbours) return 1
@@ -115,14 +91,7 @@ export default function SpanDependencyGraph({ spans }: SpanDependencyGraphProps)
 
   function handleNodeClick(node: GraphNode) {
     if (zoom.didPanRef.current) return
-    if (focusedId === node.id) {
-      // Second click — open panel
-      setPanelId(node.id)
-    } else {
-      // First click on a different node — select it, close any open panel
-      setFocusedId(node.id)
-      setPanelId(null)
-    }
+    setFocusedId((id) => (id === node.id ? null : node.id))
   }
 
   function scheduleTooltip(show: () => void) {
@@ -298,7 +267,7 @@ export default function SpanDependencyGraph({ spans }: SpanDependencyGraphProps)
               {/* Nodes */}
               {layout.nodes.map((node) => {
                 const s = node.span
-                const isFocused = focusedId === node.id || panelId === node.id
+                const isFocused = focusedId === node.id
                 const dot = statusDotColor(s.statusCode)
                 return (
                   <g
@@ -357,10 +326,20 @@ export default function SpanDependencyGraph({ spans }: SpanDependencyGraphProps)
               })}
             </g>
           </svg>
+          <GraphScrollbar
+            orientation="horizontal"
+            metrics={zoom.horizontalScrollbar}
+            onScroll={zoom.setHorizontalScroll}
+          />
+          <GraphScrollbar
+            orientation="vertical"
+            metrics={zoom.verticalScrollbar}
+            onScroll={zoom.setVerticalScroll}
+          />
         </div>
 
         <div className="px-4 py-2 border-t border-gray-200 text-[10px] text-gray-400 dark:border-slate-700 dark:text-slate-500">
-          Scroll to zoom · drag to pan · double-click to fit · click to select · click again to open details
+          Scroll to pan · Ctrl/Cmd + scroll to zoom · drag to pan · double-click to fit · click to select
         </div>
       </div>
 
@@ -389,18 +368,6 @@ export default function SpanDependencyGraph({ spans }: SpanDependencyGraphProps)
           </div>
         </div>
       )}
-
-      <SpanDetailPanel
-        span={selectedSpan}
-        prevSpan={prevSpan}
-        nextSpan={nextSpan}
-        onClose={() => {
-          setPanelId(null)
-          setFocusedId(null)
-        }}
-        onPrev={() => selectByDelta(-1)}
-        onNext={() => selectByDelta(1)}
-      />
     </>
   )
 }

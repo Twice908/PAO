@@ -3,6 +3,14 @@
 
 ---
 
+> **Status note**: This is the original design spec written when PAO was a
+> feature living inside the Pulse monorepo ("not a new product, a new event
+> type within Pulse"). PAO has since been extracted into this standalone
+> repo with its own scoped Prisma schema, API, worker, and dashboard. The
+> architecture, data models, and SDK design below are still accurate; for
+> the current setup, deployment, and task-completion status see
+> [README.md](../README.md) and [pao-tasks.md](pao-tasks.md).
+
 ## What This Feature Is
 
 **PAO (Pulse Agent Observe)** is an AI agent observability layer built on top of Pulse's existing backend monitoring infrastructure. Where Pulse tracks HTTP requests, PAO tracks AI agent executions — LLM calls, tool invocations, inter-agent messages, cost/token usage, and anomalies like infinite loops or runaway cost.

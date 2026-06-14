@@ -11,9 +11,8 @@ export default function SettingsPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const queryClient = useQueryClient()
-  const projectId = searchParams.get('project') ?? ''
-
   const { data: projects, isLoading: loading } = useProjects()
+  const projectId = searchParams.get('project') ?? projects[0]?.id ?? ''
 
   // API key section
   const [showRegenerateModal, setShowRegenerateModal] = useState(false)
@@ -107,12 +106,12 @@ export default function SettingsPage() {
     </section>
   )
 
-  if (!projectId) {
+  if (!loading && projects.length === 0) {
     return (
       <div className="max-w-2xl mx-auto p-8 space-y-8">
         {AppearanceSection}
         <div className="flex h-full items-center justify-center">
-          <p className="text-sm text-gray-400">Select a project from the sidebar.</p>
+          <p className="text-sm text-gray-400">Create a project to manage its settings.</p>
         </div>
       </div>
     )

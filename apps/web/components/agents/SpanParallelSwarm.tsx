@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
 import SpanDetailPanel, { type AgentSpanRow } from '@/components/agents/SpanDetailPanel'
+import GraphScrollbar from '@/components/agents/GraphScrollbar'
 import GraphZoomControls from '@/components/agents/GraphZoomControls'
 import {
   type SwarmItem,
@@ -260,8 +261,10 @@ export default function SpanParallelSwarm({
                 const barW = Math.max(3, (item.durationMs / total) * PLOT_WIDTH)
                 const barY = TOP + item.lane * LANE_H + (LANE_H - BAR_H) - 4
                 const isFocused = focusedId === s.id || panelId === s.id
+                const isActive = isFocused || hoveredId === s.id
                 const dim = parallelIds ? !parallelIds.has(s.id) : false
                 const wide = barW > 46
+                const labelNearRightEdge = barX > CONTENT_WIDTH - PLOT_RIGHT - 150
                 return (
                   <g
                     key={s.id}
@@ -276,14 +279,18 @@ export default function SpanParallelSwarm({
                       setTooltip(null)
                     }}
                   >
-                    {/* Name above the bar */}
-                    <text
-                      x={barX}
-                      y={barY - 5}
-                      className={barTextClass}
-                    >
-                      {truncate(s.name)}
-                    </text>
+                    {/* Name above the bar — only shown for the active (hovered/focused)
+                        span to avoid overlapping labels when many bars are packed tightly */}
+                    {isActive && (
+                      <text
+                        x={labelNearRightEdge ? barX + barW : barX}
+                        y={barY - 5}
+                        textAnchor={labelNearRightEdge ? 'end' : 'start'}
+                        className={barTextClass}
+                      >
+                        {truncate(s.name, 30)}
+                      </text>
+                    )}
                     {/* Focus glow ring */}
                     {isFocused && (
                       <rect
@@ -323,10 +330,22 @@ export default function SpanParallelSwarm({
               })}
             </g>
           </svg>
+          <GraphScrollbar
+            orientation="horizontal"
+            metrics={zoom.horizontalScrollbar}
+            onScroll={zoom.setHorizontalScroll}
+          />
+          {layout.laneCount > 1 && (
+            <GraphScrollbar
+              orientation="vertical"
+              metrics={zoom.verticalScrollbar}
+              onScroll={zoom.setVerticalScroll}
+            />
+          )}
         </div>
 
         <div className="px-4 py-2 border-t border-gray-200 text-[10px] text-gray-400 dark:border-slate-700 dark:text-slate-500">
-          Each lane is a sequential chain · stacked lanes at the same time run in parallel · click to select · click again to open details · scroll to zoom
+          Each lane is a sequential chain · stacked lanes at the same time run in parallel · hover a span for its name · click to select · click again to open details · scroll to zoom
         </div>
       </div>
 

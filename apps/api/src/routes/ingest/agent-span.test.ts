@@ -71,7 +71,7 @@ describe('POST /ingest/agent-span', () => {
       method: 'POST',
       url: '/ingest/agent-span',
       headers: AUTH,
-      body: VALID_RUN_START,
+      body: [VALID_RUN_START],
     })
     expect(res.statusCode).toBe(202)
     expect(res.json().success).toBe(true)
@@ -82,7 +82,7 @@ describe('POST /ingest/agent-span', () => {
       method: 'POST',
       url: '/ingest/agent-span',
       headers: AUTH,
-      body: VALID_SPAN,
+      body: [VALID_SPAN],
     })
     expect(res.statusCode).toBe(202)
     expect(res.json().success).toBe(true)
@@ -93,7 +93,7 @@ describe('POST /ingest/agent-span', () => {
       method: 'POST',
       url: '/ingest/agent-span',
       headers: AUTH,
-      body: VALID_RUN_END,
+      body: [VALID_RUN_END],
     })
     expect(res.statusCode).toBe(202)
     expect(res.json().success).toBe(true)
@@ -103,7 +103,7 @@ describe('POST /ingest/agent-span', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/ingest/agent-span',
-      body: VALID_RUN_START,
+      body: [VALID_RUN_START],
     })
     expect(res.statusCode).toBe(401)
     expect(res.json().error.code).toBe('UNAUTHORIZED')
@@ -114,7 +114,7 @@ describe('POST /ingest/agent-span', () => {
       method: 'POST',
       url: '/ingest/agent-span',
       headers: { authorization: 'Token pk_live_testkey' },
-      body: VALID_RUN_START,
+      body: [VALID_RUN_START],
     })
     expect(res.statusCode).toBe(401)
     expect(res.json().error.code).toBe('UNAUTHORIZED')
@@ -128,7 +128,7 @@ describe('POST /ingest/agent-span', () => {
       method: 'POST',
       url: '/ingest/agent-span',
       headers: { authorization: 'Bearer pk_live_unknown' },
-      body: VALID_RUN_START,
+      body: [VALID_RUN_START],
     })
     expect(res.statusCode).toBe(401)
     expect(res.json().error.code).toBe('INVALID_KEY')
@@ -139,7 +139,7 @@ describe('POST /ingest/agent-span', () => {
       method: 'POST',
       url: '/ingest/agent-span',
       headers: AUTH,
-      body: { runId: RUN_ID, startedAt: NOW },
+      body: [{ runId: RUN_ID, startedAt: NOW }],
     })
     expect(res.statusCode).toBe(400)
     expect(res.json().error.code).toBe('BAD_REQUEST')
@@ -150,7 +150,7 @@ describe('POST /ingest/agent-span', () => {
       method: 'POST',
       url: '/ingest/agent-span',
       headers: AUTH,
-      body: { type: 'run_start', startedAt: NOW },
+      body: [{ type: 'run_start', startedAt: NOW }],
     })
     expect(res.statusCode).toBe(400)
     expect(res.json().error.code).toBe('BAD_REQUEST')
@@ -161,7 +161,7 @@ describe('POST /ingest/agent-span', () => {
       method: 'POST',
       url: '/ingest/agent-span',
       headers: AUTH,
-      body: { type: 'run_start', runId: RUN_ID, startedAt: 'not-a-date' },
+      body: [{ type: 'run_start', runId: RUN_ID, startedAt: 'not-a-date' }],
     })
     expect(res.statusCode).toBe(400)
     expect(res.json().error.code).toBe('BAD_REQUEST')
@@ -174,7 +174,7 @@ describe('POST /ingest/agent-span', () => {
       method: 'POST',
       url: '/ingest/agent-span',
       headers: AUTH,
-      body: VALID_SPAN,
+      body: [VALID_SPAN],
     })
 
     expect(agentSpansQueue.add).toHaveBeenCalledOnce()

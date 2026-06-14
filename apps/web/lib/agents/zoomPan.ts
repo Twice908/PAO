@@ -28,9 +28,48 @@ function distance(a: { x: number; y: number }, b: { x: number; y: number }): num
   return Math.hypot(a.x - b.x, a.y - b.y)
 }
 
+/**
+ * Clamp pan offsets so the content can never be scrolled fully out of the
+ * viewport: when the (scaled) content is smaller than the viewport on an
+ * axis it is centred on that axis, otherwise the offset is bounded so the
+ * content edges never move past the viewport edges.
+ */
+function clampPan(
+  tx: number,
+  ty: number,
+  content: ContentSize,
+  viewport: ContentSize,
+  scale: number,
+): { tx: number; ty: number } {
+  const scaledWidth = content.width * scale
+  const scaledHeight = content.height * scale
+
+  const nx =
+    scaledWidth <= viewport.width
+      ? (viewport.width - scaledWidth) / 2
+      : Math.min(0, Math.max(viewport.width - scaledWidth, tx))
+
+  const ny =
+    scaledHeight <= viewport.height
+      ? (viewport.height - scaledHeight) / 2
+      : Math.min(0, Math.max(viewport.height - scaledHeight, ty))
+
+  return { tx: nx, ty: ny }
+}
+
+export interface ScrollbarMetrics {
+  /** Thumb size as a fraction of the track (0-1). 1 means no scrolling needed. */
+  size: number
+  /** Thumb start position as a fraction of the track (0-1). */
+  offset: number
+  /** Whether this axis can be scrolled at all. */
+  scrollable: boolean
+}
+
 export interface ZoomPanApi {
   svgRef: React.RefObject<SVGSVGElement>
   transform: Transform
+  viewportSize: ContentSize
   isPanning: boolean
   /** True when the last gesture moved far enough to count as a drag (suppress clicks). */
   didPanRef: React.RefObject<boolean>
@@ -41,17 +80,28 @@ export interface ZoomPanApi {
   zoomIn: () => void
   zoomOut: () => void
   fitToView: () => void
+  /** Scroll metrics for rendering custom horizontal/vertical scrollbars. */
+  horizontalScrollbar: ScrollbarMetrics
+  verticalScrollbar: ScrollbarMetrics
+  /** Set the horizontal scroll position from a scrollbar drag (0-1 fraction of scroll range). */
+  setHorizontalScroll: (fraction: number) => void
+  /** Set the vertical scroll position from a scrollbar drag (0-1 fraction of scroll range). */
+  setVerticalScroll: (fraction: number) => void
 }
 
 /**
  * Stateless SVG zoom/pan via a `<g transform>` matrix. Handles mouse wheel
- * zoom (anchored at the cursor), pointer drag pan, two-pointer pinch zoom for
- * touch, and "fit to view". Crisp at any zoom level since nothing re-rasterises.
+ * panning (horizontal scroll/swipe pans left-right, ctrl/cmd+wheel zooms,
+ * anchored at the cursor), pointer drag pan, two-pointer pinch zoom for
+ * touch, and "fit to view". The content is always clamped so it can't be
+ * scrolled out of the viewport, and is centred when it's smaller than the
+ * viewport. Crisp at any zoom level since nothing re-rasterises.
  */
 export function useZoomPan(content: ContentSize): ZoomPanApi {
   const svgRef = useRef<SVGSVGElement>(null)
   const [transform, setTransform] = useState<Transform>({ scale: 1, tx: 0, ty: 0 })
   const [isPanning, setIsPanning] = useState(false)
+  const [viewportSize, setViewportSize] = useState<ContentSize>({ width: 0, height: 0 })
 
   const transformRef = useRef(transform)
   transformRef.current = transform
@@ -90,7 +140,9 @@ export function useZoomPan(content: ContentSize): ZoomPanApi {
     const measure = () => {
       const rect = el.getBoundingClientRect()
       const firstMeasure = viewport.current.width === 0
-      viewport.current = { width: rect.width, height: rect.height }
+      const size = { width: rect.width, height: rect.height }
+      viewport.current = size
+      setViewportSize(size)
       if (firstMeasure) fitToView()
     }
     measure()
@@ -103,27 +155,41 @@ export function useZoomPan(content: ContentSize): ZoomPanApi {
     setTransform((t) => {
       const next = clampScale(t.scale * factor)
       const k = next / t.scale
-      return {
-        scale: next,
-        tx: px - (px - t.tx) * k,
-        ty: py - (py - t.ty) * k,
-      }
+      const rawTx = px - (px - t.tx) * k
+      const rawTy = py - (py - t.ty) * k
+      const { tx, ty } = clampPan(rawTx, rawTy, contentRef.current, viewport.current, next)
+      return { scale: next, tx, ty }
+    })
+  }, [])
+
+  const panBy = useCallback((dx: number, dy: number) => {
+    setTransform((t) => {
+      const { tx, ty } = clampPan(t.tx + dx, t.ty + dy, contentRef.current, viewport.current, t.scale)
+      return { scale: t.scale, tx, ty }
     })
   }, [])
 
   // Native non-passive wheel listener so we can preventDefault page scroll.
+  // Plain wheel/trackpad scroll pans the graph horizontally (vertical scroll
+  // moves it left/right, horizontal scroll/swipe also moves it left/right).
+  // Ctrl/Cmd+wheel zooms, anchored at the cursor.
   useEffect(() => {
     const el = svgRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
-      const rect = el.getBoundingClientRect()
-      const factor = e.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP
-      zoomAround(e.clientX - rect.left, e.clientY - rect.top, factor)
+      if (e.ctrlKey || e.metaKey) {
+        const rect = el.getBoundingClientRect()
+        const factor = e.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP
+        zoomAround(e.clientX - rect.left, e.clientY - rect.top, factor)
+        return
+      }
+      // Scroll up / scroll right -> content moves right; scroll down / scroll left -> content moves left.
+      panBy(e.deltaX - e.deltaY, 0)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [zoomAround])
+  }, [zoomAround, panBy])
 
   const localPoint = (e: React.PointerEvent) => {
     const rect = svgRef.current?.getBoundingClientRect()
@@ -167,7 +233,10 @@ export function useZoomPan(content: ContentSize): ZoomPanApi {
           const cy = pinch.current.cy
           setTransform((t) => {
             const k = next / t.scale
-            return { scale: next, tx: cx - (cx - t.tx) * k, ty: cy - (cy - t.ty) * k }
+            const rawTx = cx - (cx - t.tx) * k
+            const rawTy = cy - (cy - t.ty) * k
+            const { tx, ty } = clampPan(rawTx, rawTy, contentRef.current, viewport.current, next)
+            return { scale: next, tx, ty }
           })
         }
         didPanRef.current = true
@@ -179,7 +248,16 @@ export function useZoomPan(content: ContentSize): ZoomPanApi {
       const dx = e.clientX - origin.x
       const dy = e.clientY - origin.y
       if (Math.hypot(dx, dy) > PAN_THRESHOLD) didPanRef.current = true
-      setTransform({ scale: transformRef.current.scale, tx: origin.tx + dx, ty: origin.ty + dy })
+      setTransform((t) => {
+        const { tx, ty } = clampPan(
+          origin.tx + dx,
+          origin.ty + dy,
+          contentRef.current,
+          viewport.current,
+          t.scale,
+        )
+        return { scale: t.scale, tx, ty }
+      })
     },
     [],
   )
@@ -216,9 +294,45 @@ export function useZoomPan(content: ContentSize): ZoomPanApi {
   const zoomIn = useCallback(() => zoomBy(BUTTON_STEP), [zoomBy])
   const zoomOut = useCallback(() => zoomBy(1 / BUTTON_STEP), [zoomBy])
 
+  const setHorizontalScroll = useCallback((fraction: number) => {
+    const vp = viewport.current
+    const c = contentRef.current
+    setTransform((t) => {
+      const scaledWidth = c.width * t.scale
+      const range = Math.max(0, scaledWidth - vp.width)
+      const tx = -clamp01(fraction) * range
+      const { tx: ctx, ty } = clampPan(tx, t.ty, c, vp, t.scale)
+      return { scale: t.scale, tx: ctx, ty }
+    })
+  }, [])
+
+  const setVerticalScroll = useCallback((fraction: number) => {
+    const vp = viewport.current
+    const c = contentRef.current
+    setTransform((t) => {
+      const scaledHeight = c.height * t.scale
+      const range = Math.max(0, scaledHeight - vp.height)
+      const ty = -clamp01(fraction) * range
+      const { tx, ty: cty } = clampPan(t.tx, ty, c, vp, t.scale)
+      return { scale: t.scale, tx, ty: cty }
+    })
+  }, [])
+
+  const horizontalScrollbar = scrollbarMetrics(
+    content.width * transform.scale,
+    viewportSize.width,
+    transform.tx,
+  )
+  const verticalScrollbar = scrollbarMetrics(
+    content.height * transform.scale,
+    viewportSize.height,
+    transform.ty,
+  )
+
   return {
     svgRef,
     transform,
+    viewportSize,
     isPanning,
     didPanRef,
     onPointerDown,
@@ -228,5 +342,23 @@ export function useZoomPan(content: ContentSize): ZoomPanApi {
     zoomIn,
     zoomOut,
     fitToView,
+    horizontalScrollbar,
+    verticalScrollbar,
+    setHorizontalScroll,
+    setVerticalScroll,
   }
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value))
+}
+
+function scrollbarMetrics(scaledContent: number, viewport: number, offset: number): ScrollbarMetrics {
+  if (!viewport || scaledContent <= viewport) {
+    return { size: 1, offset: 0, scrollable: false }
+  }
+  const size = clamp01(viewport / scaledContent)
+  const range = scaledContent - viewport
+  const position = clamp01(-offset / range)
+  return { size, offset: position * (1 - size), scrollable: true }
 }

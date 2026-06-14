@@ -8,47 +8,36 @@ Phase A goal: A developer can install `@pulse/agent`, wrap their agent run, and 
 
 ## 1. Database & Schema
 
-- [ ] **1.1 Add PAO models to Prisma schema**
-  Add `AgentDefinition`, `AgentRun`, and `AgentSpan` models to `prisma/schema.prisma` exactly as specified in `claude.pulse_agent_observe.md`. Add relations back from `Project`. Do not modify any existing model.
+- [x] **1.1 Add PAO models to Prisma schema**
+  `AgentDefinition`, `AgentRun`, and `AgentSpan` models are present in `packages/db/prisma/schema.prisma` with back-relations from `Project`.
 
-- [ ] **1.2 Generate and run Prisma migration**
-  Run `prisma migrate dev --name add_pao_models`. Verify migration file is clean and all foreign keys resolve correctly.
+- [x] **1.2 Generate and run Prisma migration**
+  `packages/db/prisma/migrations/0001_init/migration.sql` creates the PAO-scoped schema (Project/Alert/AlertEvent + the three Agent models).
 
-- [ ] **1.3 Create TimescaleDB hypertable migration**
-  Create a raw SQL file at `prisma/migrations/<timestamp>_agent_spans_hypertable/migration.sql`. Call `create_hypertable('agent_spans', 'started_at', if_not_exists => TRUE)` and add the two composite indexes on `(run_id, started_at DESC)` and `(project_id, started_at DESC)`. Apply with `prisma migrate deploy`.
+- [x] **1.3 Create TimescaleDB hypertable migration**
+  `packages/db/prisma/migrations/0002_agent_spans_hypertable/migration.sql` calls `create_hypertable('agent_spans', 'started_at', if_not_exists => TRUE)` and adds the `(run_id, started_at DESC)` / `(project_id, started_at DESC)` indexes. Not applied by `prisma migrate deploy`/`db:push` automatically — run it manually with `psql` (see README setup steps).
 
-- [ ] **1.4 Seed script: add sample agent run + spans**
-  Add a `seedAgentRun()` function to the existing seed script. Creates one `AgentRun` with 5 `AgentSpan` records (mix of `llm_call` and `tool_call` types) for the dev project. Used to validate dashboard UI without real SDK traffic.
+- [x] **1.4 Seed script: add sample agent run + spans**
+  `seedAgentRun()` in `packages/db/prisma/seed.ts` creates one `AgentRun` with 5 `AgentSpan` records (3x `llm_call`, 2x `tool_call`) for the dev project.
 
 ---
 
 ## 2. Ingestion API
 
-- [ ] **2.1 Define Zod schema for agent-span payload**
-  Create `apps/api/src/schemas/agent-span.schema.ts`. Define `AgentSpanPayloadSchema` covering all fields from the payload shape in the project instructions. Export the inferred TypeScript type.
+- [x] **2.1 Define Zod schema for agent-span payload**
+  `apps/api/src/schemas/agent-span.schema.ts` defines `AgentSpanPayloadSchema` and the batch wrapper `AgentSpanBatchSchema = z.array(AgentSpanPayloadSchema).min(1)`, with the inferred TS type exported.
 
-- [ ] **2.2 Create BullMQ queue for agent spans**
-  In `apps/api/src/queues/index.ts` (or equivalent), add an `agentSpansQueue` using the same Redis connection and BullMQ config as the existing `requestLogsQueue`. Queue name: `'agent-spans'`.
+- [x] **2.2 Create BullMQ queue for agent spans**
+  `apps/api/src/lib/queue.ts` exports `agentSpansQueue` (queue name `'agent-spans'`) with `defaultJobOptions` (3 attempts, exponential backoff).
 
-- [ ] **2.3 Implement POST /ingest/agent-span route**
-  Create `apps/api/src/routes/ingest/agent-span.ts`. The route must:
-  - Authenticate via existing `x-api-key` middleware (reuse — do not rewrite)
-  - Parse and validate body with `AgentSpanPayloadSchema`
-  - On validation failure: return `400` with Zod error details
-  - On success: push job to `agentSpansQueue`, return `202 Accepted` immediately
-  - Never await the queue push in the critical path — fire and return
-  - Log queue failures with Pino at `warn` level (do not throw to caller)
+- [x] **2.3 Implement POST /ingest/agent-span route**
+  `apps/api/src/routes/ingest/agent-span.ts` authenticates via the `Authorization: Bearer <key>` header (looked up against `Project` in `lib/auth.ts`/`lib/api-key.ts`), validates the body as an array against `AgentSpanBatchSchema`, enqueues each item on `agentSpansQueue`, and returns `202`.
 
-- [ ] **2.4 Register the new route in the Fastify app**
-  Register `agent-span` route under `/ingest/agent-span` in the main app router file. Confirm it appears in the route list on startup.
+- [x] **2.4 Register the new route in the Fastify app**
+  Registered in `apps/api/src/index.ts` via `app.register(agentSpanRoutes)`.
 
-- [ ] **2.5 Write integration test for /ingest/agent-span**
-  Using the existing test harness (supertest or Fastify's inject), test:
-  - Valid payload → `202`, job enqueued
-  - Missing `apiKey` → `401`
-  - Invalid payload (missing `type` field) → `400`
-  - Valid `run_start` payload → `202`
-  - Valid `run_end` payload → `202`
+- [x] **2.5 Write integration test for /ingest/agent-span**
+  `apps/api/src/routes/ingest/agent-span.test.ts` — 10 tests covering valid `run_start`/`span`/`run_end` (202), missing/malformed auth (401), unknown API key (401), and invalid payloads (400). All passing.
 
 ---
 
@@ -162,22 +151,11 @@ Phase A goal: A developer can install `@pulse/agent`, wrap their agent run, and 
 
 ## 7. Integration Smoke Test
 
-- [ ] **7.1 Manual end-to-end smoke test**
-  Write a standalone script at `scripts/test-pao-e2e.ts`:
-  ```ts
-  import { PulseAgent } from '@pulse/agent'
-  const pulse = new PulseAgent({ apiKey: process.env.PULSE_TEST_KEY! })
-  const run = await pulse.startRun('E2E smoke test')
-  const span = run.startSpan('llm_call', { name: 'fake-gpt4', model: 'gpt-4o', inputPreview: 'Hello' })
-  await new Promise(r => setTimeout(r, 100))
-  span.end({ outputPreview: 'World', inputTokens: 10, outputTokens: 5, status: 'success' })
-  await run.complete({ status: 'completed' })
-  console.log('Run ID:', run.id)
-  ```
-  Run against local dev environment. Verify the run appears in `/dashboard/agents` within 2 seconds.
+- [x] **7.1 Manual end-to-end smoke test**
+  `scripts/test-pao-e2e.ts` sends `run_start` -> `span` -> `run_end` via `@pulse/agent` against a running `apps/api`. Run with `PULSE_TEST_KEY=pk_live_... npm run test:e2e` and verify the run appears in `/dashboard/agents`.
 
 - [ ] **7.2 Verify data scoping**
-  Using two different API keys (two test projects), send agent spans for each. Confirm that each dashboard only shows its own project's runs — no cross-project leakage.
+  Manual QA step — using two different API keys (two test projects), send agent spans for each and confirm each dashboard only shows its own project's runs. Not yet re-verified after the latest changes; run before relying on multi-tenant isolation in production.
 
 ---
 
@@ -343,13 +321,13 @@ The SDK must never throw to the caller and must never block the agent's executio
 
 ## Phase A Done When
 
-- [ ] A developer can run the smoke test script and see their run in the dashboard in < 5 seconds
-- [ ] Run list shows correct status, duration, token count, and cost
-- [ ] Span table shows all span types with correct colors and durations
-- [ ] Span detail panel shows `inputPreview`, `outputPreview`, and metadata
-- [ ] No agent SDK call ever throws or blocks the calling thread
-- [ ] All unit and integration tests pass
-- [ ] Worker handles duplicate span IDs without error
+- [ ] A developer can run the smoke test script and see their run in the dashboard in < 5 seconds (script exists at `scripts/test-pao-e2e.ts`; needs a live run against deployed infra to confirm timing)
+- [x] Run list shows correct status, duration, token count, and cost
+- [x] Span table shows all span types with correct colors and durations
+- [x] Span detail panel shows `inputPreview`, `outputPreview`, and metadata
+- [x] No agent SDK call ever throws or blocks the calling thread
+- [x] All unit and integration tests pass (`npm run build`, `npm run test`, `npm run lint` all green at the repo root)
+- [x] Worker handles duplicate span IDs without error
 
 ---
 

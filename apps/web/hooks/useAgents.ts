@@ -73,9 +73,17 @@ export function useAgentRuns(projectId: string, filters: AgentRunsFilters = {}):
 
     const es = new EventSource(`/api/projects/${projectId}/agents/stream`)
 
+    // If the stream opens with no runs to send, no message ever arrives to
+    // clear the loading state — fall back to "loaded" shortly after open.
+    let openTimeout: ReturnType<typeof setTimeout> | null = setTimeout(() => setIsLoading(false), 300)
+
     es.onopen = () => setError(null)
 
     es.onmessage = (event: MessageEvent<string>) => {
+      if (openTimeout) {
+        clearTimeout(openTimeout)
+        openTimeout = null
+      }
       const incoming = JSON.parse(event.data) as AgentRunSummary
       setIsLoading(false)
       setRuns((prev) => {
@@ -86,11 +94,18 @@ export function useAgentRuns(projectId: string, filters: AgentRunsFilters = {}):
     }
 
     es.onerror = () => {
+      if (openTimeout) {
+        clearTimeout(openTimeout)
+        openTimeout = null
+      }
       setIsLoading(false)
       setError('Connection lost — reconnecting…')
     }
 
-    return () => es.close()
+    return () => {
+      if (openTimeout) clearTimeout(openTimeout)
+      es.close()
+    }
   }, [projectId])
 
   const filtered = status === 'all' ? runs : runs.filter((r) => r.status === status)
