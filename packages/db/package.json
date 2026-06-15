@@ -8,6 +8,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "scripts": {
+    "postinstall": "prisma generate",
     "build": "tsc",
     "dev": "tsc --watch",
     "db:generate": "prisma generate",
