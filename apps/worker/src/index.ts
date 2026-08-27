@@ -51,6 +51,26 @@ registerAgentAlertsJob().catch((err: unknown) => {
 })
 
 // ── Agent-span worker ─────────────────────────────────────────────────────────
-startAgentSpanWorker(connection)
+const agentSpanWorker = startAgentSpanWorker(connection)
 
 logger.info('PAO worker started — agent-spans + agent-alerts queues active')
+
+// ── Graceful shutdown ───────────────────────────────────────────────────────
+// Railway sends SIGTERM on redeploy/stop. Close the workers and queue cleanly
+// so in-flight jobs finish and the process exits 0 instead of npm reporting the
+// start script as "failed with signal SIGTERM".
+let shuttingDown = false
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return
+  shuttingDown = true
+  logger.info({ signal }, 'Shutting down PAO worker')
+  await Promise.allSettled([
+    agentSpanWorker.close(),
+    agentAlertsWorker.close(),
+    agentAlertsQueue.close(),
+  ])
+  process.exit(0)
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'))
+process.on('SIGINT', () => void shutdown('SIGINT'))
