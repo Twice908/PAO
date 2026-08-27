@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '@pulse/db'
 import { hashApiKey } from '../../lib/api-key'
 import { agentSpansQueue } from '../../lib/queue'
+import { randomUUID } from 'node:crypto'
 import { AgentSpanBatchSchema } from '../../schemas/agent-span.schema'
 
 export async function agentSpanRoutes(app: FastifyInstance): Promise<void> {
@@ -28,21 +29,40 @@ export async function agentSpanRoutes(app: FastifyInstance): Promise<void> {
       })
     }
 
-    const parsed = AgentSpanBatchSchema.safeParse(request.body)
+    // Accept a bare object as a one-element batch. No-code HTTP modules
+    // frequently cannot express a top-level JSON array.
+    const rawBody = Array.isArray(request.body) ? request.body : [request.body]
+
+    const parsed = AgentSpanBatchSchema.safeParse(rawBody)
     if (!parsed.success) {
+      // Field-level detail: a raw Zod message string is undebuggable for
+      // someone assembling this payload in an n8n or Make expression editor.
       return reply.status(400).send({
         success: false,
-        error: { code: 'BAD_REQUEST', message: parsed.error.message },
+        error: {
+          code: 'BAD_REQUEST',
+          message: 'One or more payloads failed validation',
+          issues: parsed.error.issues.map((issue) => ({
+            index: typeof issue.path[0] === 'number' ? issue.path[0] : null,
+            field: issue.path.slice(1).join('.') || null,
+            message: issue.message,
+          })),
+        },
       })
     }
 
     // Fire and forget — never block the response path on the queue push
     for (const span of parsed.data) {
-      agentSpansQueue.add('process', { ...span, projectId: project.id }).catch((err: unknown) => {
+      // Mint spanId server-side when omitted. It is the span's primary key,
+      // and no-code callers often have no UUID generator available.
+      const payload =
+        span.type === 'span' && !span.spanId ? { ...span, spanId: randomUUID() } : span
+
+      agentSpansQueue.add('process', { ...payload, projectId: project.id }).catch((err: unknown) => {
         request.log.warn({ err }, 'Failed to enqueue agent span')
       })
     }
 
-    return reply.status(202).send({ success: true })
+    return reply.status(202).send({ success: true, accepted: parsed.data.length })
   })
 }

@@ -48,7 +48,7 @@ const VALID_SPAN = {
   startedAt: NOW,
   model: 'gpt-4o',
 }
-const VALID_RUN_END = { type: 'run_end', runId: RUN_ID, startedAt: NOW, status: 'success' }
+const VALID_RUN_END = { type: 'run_end', runId: RUN_ID, startedAt: NOW, status: 'completed' }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -182,5 +182,99 @@ describe('POST /ingest/agent-span', () => {
       'process',
       expect.objectContaining({ projectId: 'proj_test', type: 'span' }),
     )
+  })
+
+  // ── Gap 1: payloads that would pass validation then die in the worker ──────
+
+  it('returns 400 for a span missing spanType (non-nullable in DB)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/ingest/agent-span',
+      headers: AUTH,
+      body: [{ type: 'span', runId: RUN_ID, name: 'x', startedAt: NOW }],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 400 for a span missing name (non-nullable in DB)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/ingest/agent-span',
+      headers: AUTH,
+      body: [{ type: 'span', runId: RUN_ID, spanType: 'llm_call', startedAt: NOW }],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('rejects a span-level status on run_end', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/ingest/agent-span',
+      headers: AUTH,
+      body: [{ type: 'run_end', runId: RUN_ID, startedAt: NOW, status: 'success' }],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('rejects a run-level status on a span', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/ingest/agent-span',
+      headers: AUTH,
+      body: [{ ...VALID_SPAN, status: 'completed' }],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  // ── No-code ergonomics ────────────────────────────────────────────────────
+
+  it('mints a spanId server-side when the caller omits it', async () => {
+    const { agentSpansQueue } = await import('../../lib/queue')
+    const { spanId: _omitted, ...noSpanId } = VALID_SPAN
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/ingest/agent-span',
+      headers: AUTH,
+      body: [noSpanId],
+    })
+
+    expect(res.statusCode).toBe(202)
+    const enqueued = vi.mocked(agentSpansQueue.add).mock.calls[0]?.[1] as { spanId?: string }
+    expect(enqueued.spanId).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('accepts a bare object as a one-element batch', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/ingest/agent-span',
+      headers: AUTH,
+      body: VALID_RUN_START,
+    })
+    expect(res.statusCode).toBe(202)
+    expect(res.json().accepted).toBe(1)
+  })
+
+  it('accepts ISO-8601 timestamps carrying a UTC offset', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/ingest/agent-span',
+      headers: AUTH,
+      body: [{ type: 'run_start', runId: RUN_ID, startedAt: '2026-01-01T00:00:00+05:30' }],
+    })
+    expect(res.statusCode).toBe(202)
+  })
+
+  it('reports the offending index and field on validation failure', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/ingest/agent-span',
+      headers: AUTH,
+      body: [VALID_RUN_START, { type: 'span', runId: RUN_ID, startedAt: NOW }],
+    })
+    expect(res.statusCode).toBe(400)
+    const { issues } = res.json().error
+    expect(issues.some((i: { index: number }) => i.index === 1)).toBe(true)
+    expect(issues.some((i: { field: string }) => i.field === 'spanType')).toBe(true)
   })
 })

@@ -7,7 +7,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "openapi:lint": "redocly lint openapi/openapi.yaml",
+    "openapi:preview": "redocly preview-docs openapi/openapi.yaml"
   },
   "dependencies": {
     "@clerk/backend": "^1.13.0",
@@ -24,7 +26,10 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@redocly/cli": "^2.47.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
+    "js-yaml": "^4.2.0",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"

@@ -1,0 +1,194 @@
+name: Deploy
+
+# Manual only, main only. This pipeline does not run on push/PR — it is
+# triggered by hand from the Actions tab once main is ready to ship.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  guard-main:
+    name: Guard — main branch only
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless triggered on main
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "This workflow may only be dispatched on main (got ${{ github.ref }})."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------
+  # apps/web -> Vercel
+  #
+  # Vercel's GitHub integration already auto-deploys on push to main, so
+  # this job does not re-trigger a deploy. It runs the same checks Vercel's
+  # build would run, then confirms (via the Vercel API) that main's current
+  # commit has actually produced a READY production deployment, so a manual
+  # dispatch of "deploy everything" fails loudly if web silently didn't ship.
+  # ---------------------------------------------------------------------
+  web:
+    name: web (Vercel)
+    needs: guard-main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build web
+        run: npm run build -w apps/web
+
+      - name: Verify Vercel deployment for this commit
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+
+          for i in $(seq 1 20); do
+            RESPONSE=$(curl -sS \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&limit=10")
+
+            STATE=$(echo "$RESPONSE" | node -e "
+              const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+              const match = (data.deployments || []).find(d => d.meta && d.meta.githubCommitSha === process.argv[1]);
+              console.log(match ? match.state : 'PENDING');
+            " "$SHA")
+
+            echo "Deployment state for $SHA: $STATE"
+
+            if [ "$STATE" = "READY" ]; then
+              exit 0
+            fi
+            if [ "$STATE" = "ERROR" ] || [ "$STATE" = "CANCELED" ]; then
+              echo "Vercel deployment failed for commit $SHA."
+              exit 1
+            fi
+            sleep 15
+          done
+
+          echo "Timed out waiting for Vercel to deploy commit $SHA."
+          exit 1
+
+  # ---------------------------------------------------------------------
+  # apps/api -> Railway
+  #
+  # Railway's GitHub integration auto-deploys this service on push to main.
+  # This job runs the real build/test gate first, then polls Railway's
+  # GraphQL API for that service's latest deployment status so a bad deploy
+  # is caught here instead of only being visible in the Railway dashboard.
+  # ---------------------------------------------------------------------
+  api:
+    name: api (Railway)
+    needs: guard-main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint, test, build apps/api
+        run: |
+          npm run lint -w apps/api
+          npm run test -w apps/api
+          npm run build -w apps/api
+
+      - name: Verify Railway deployment
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+          RAILWAY_API_SERVICE_ID: ${{ secrets.RAILWAY_API_SERVICE_ID }}
+        run: ./scripts/ci/verify-railway-deploy.sh "$RAILWAY_API_SERVICE_ID"
+
+  # ---------------------------------------------------------------------
+  # apps/worker -> Railway
+  # Same pattern as api: Railway auto-deploys, this job gates + verifies.
+  # ---------------------------------------------------------------------
+  worker:
+    name: worker (Railway)
+    needs: guard-main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint, test, build apps/worker
+        run: |
+          npm run lint -w apps/worker
+          npm run test -w apps/worker
+          npm run build -w apps/worker
+
+      - name: Verify Railway deployment
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+          RAILWAY_API_SERVICE_ID: ${{ secrets.RAILWAY_WORKER_SERVICE_ID }}
+        run: ./scripts/ci/verify-railway-deploy.sh "$RAILWAY_WORKER_SERVICE_ID"
+
+  # ---------------------------------------------------------------------
+  # Postgres + Redis are provisioned Railway datastores, not code this repo
+  # builds or deploys. There is nothing to "ship" here on every dispatch —
+  # this job only confirms both still exist and are running in the Railway
+  # project, so a manual "deploy everything" run surfaces it immediately if
+  # either was deleted or is crash-looping, rather than that only showing up
+  # later as an api/worker connection failure.
+  # ---------------------------------------------------------------------
+  datastores:
+    name: postgres + redis (provisioning check)
+    needs: guard-main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Postgres and Redis are provisioned and running
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+          RAILWAY_POSTGRES_SERVICE_ID: ${{ secrets.RAILWAY_POSTGRES_SERVICE_ID }}
+          RAILWAY_REDIS_SERVICE_ID: ${{ secrets.RAILWAY_REDIS_SERVICE_ID }}
+        run: |
+          ./scripts/ci/check-railway-datastore.sh "$RAILWAY_POSTGRES_SERVICE_ID" "Postgres"
+          ./scripts/ci/check-railway-datastore.sh "$RAILWAY_REDIS_SERVICE_ID" "Redis"
+
+  summary:
+    name: Deployment summary
+    needs: [web, api, worker, datastores]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Report
+        run: |
+          echo "web:        ${{ needs.web.result }}"
+          echo "api:        ${{ needs.api.result }}"
+          echo "worker:     ${{ needs.worker.result }}"
+          echo "datastores: ${{ needs.datastores.result }}"
+          if [ "${{ needs.web.result }}" != "success" ] || \
+             [ "${{ needs.api.result }}" != "success" ] || \
+             [ "${{ needs.worker.result }}" != "success" ] || \
+             [ "${{ needs.datastores.result }}" != "success" ]; then
+            echo "One or more services failed to deploy or verify."
+            exit 1
+          fi

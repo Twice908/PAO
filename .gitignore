@@ -23,3 +23,7 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated at build time from apps/api/openapi/openapi.yaml
+apps/web/public/openapi.yaml
+apps/web/public/docs/

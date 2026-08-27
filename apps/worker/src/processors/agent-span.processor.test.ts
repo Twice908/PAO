@@ -101,7 +101,8 @@ describe('processAgentSpan', () => {
       expect(mockPrisma.agentRun.upsert).toHaveBeenCalledOnce()
       expect(mockPrisma.agentRun.upsert).toHaveBeenCalledWith({
         where: { id: RUN_ID },
-        update: {},
+        // A known task backfills a placeholder run created by an earlier span.
+        update: { task: 'Summarize quarterly report' },
         create: {
           id: RUN_ID,
           projectId: PROJECT_ID,
@@ -126,6 +127,28 @@ describe('processAgentSpan', () => {
 
       expect(mockPrisma.agentRun.upsert).toHaveBeenCalledWith(
         expect.objectContaining({ create: expect.objectContaining({ task: '' }) }),
+      )
+    })
+
+    it('fills in the task on a placeholder run created by an earlier span', async () => {
+      // OTLP delivers spans before their root, so the run may already exist
+      // with an empty task by the time run_start lands.
+      const job = makeJob({ type: 'run_start', projectId: PROJECT_ID, runId: RUN_ID, task: 'Real task', startedAt: NOW })
+
+      await processAgentSpan(job)
+
+      expect(mockPrisma.agentRun.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ update: { task: 'Real task' } }),
+      )
+    })
+
+    it('never clears an existing task with a blank one', async () => {
+      const job = makeJob({ type: 'run_start', projectId: PROJECT_ID, runId: RUN_ID, startedAt: NOW })
+
+      await processAgentSpan(job)
+
+      expect(mockPrisma.agentRun.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ update: {} }),
       )
     })
 
@@ -191,6 +214,55 @@ describe('processAgentSpan', () => {
           totalCostUsd: { increment: 0.002 },
         },
       })
+    })
+
+    // ── Server-side cost derivation ────────────────────────────────────────
+
+    it('derives costUsd from tokens when the caller omits it', async () => {
+      const { costUsd: _omitted, ...noCost } = baseSpan
+      const job = makeJob(noCost)
+
+      await processAgentSpan(job)
+
+      // gpt-4o: 100 * 2.5/1M + 50 * 10/1M = 0.00025 + 0.0005 = 0.00075
+      const call = mockPrisma.agentSpan.upsert.mock.calls[0][0]
+      expect(call.create.costUsd).toBeCloseTo(0.00075, 9)
+      expect(mockPrisma.agentRun.update).toHaveBeenCalledWith({
+        where: { id: RUN_ID },
+        data: {
+          totalTokens: { increment: 150 },
+          totalCostUsd: { increment: expect.closeTo(0.00075, 9) },
+        },
+      })
+    })
+
+    it('prefers an explicitly supplied costUsd over the derived one', async () => {
+      const job = makeJob({ ...baseSpan, costUsd: 0.5 })
+
+      await processAgentSpan(job)
+
+      const call = mockPrisma.agentSpan.upsert.mock.calls[0][0]
+      expect(call.create.costUsd).toBe(0.5)
+    })
+
+    it('leaves costUsd undefined for an unknown model rather than writing 0', async () => {
+      const { costUsd: _omitted, ...noCost } = baseSpan
+      const job = makeJob({ ...noCost, model: 'some-self-hosted-model' })
+
+      await processAgentSpan(job)
+
+      const call = mockPrisma.agentSpan.upsert.mock.calls[0][0]
+      expect(call.create.costUsd).toBeUndefined()
+    })
+
+    it('leaves costUsd undefined for a non-LLM span with no tokens', async () => {
+      const { costUsd: _c, inputTokens: _i, outputTokens: _o, ...noUsage } = baseSpan
+      const job = makeJob({ ...noUsage, spanType: 'tool_call', name: 'web_search', model: undefined })
+
+      await processAgentSpan(job)
+
+      const call = mockPrisma.agentSpan.upsert.mock.calls[0][0]
+      expect(call.create.costUsd).toBeUndefined()
     })
 
     it('upserts AgentDefinition when agentName is present', async () => {

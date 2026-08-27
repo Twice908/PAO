@@ -4,6 +4,7 @@ import pino from 'pino'
 import { prisma, Prisma } from '@pulse/db'
 import { redis } from '../lib/redis'
 import { evaluateAgentRunAlerts } from '../lib/alert-evaluator'
+import { deriveCostUsd } from '../lib/pricing'
 
 const logger = pino({ name: 'agent-span-processor' })
 
@@ -37,9 +38,13 @@ export interface AgentSpanJobData {
 async function handleRunStart(data: AgentSpanJobData): Promise<void> {
   const { runId, projectId, task, startedAt } = data
 
+  // Spans can outrun their run_start (OTLP exports each span in its own
+  // request, and PAO's own guard creates a placeholder run with an empty
+  // task). Fill in the real task when we finally learn it, but never clear an
+  // existing one with a blank.
   await prisma.agentRun.upsert({
     where: { id: runId },
-    update: {},
+    update: task ? { task } : {},
     create: {
       id: runId,
       projectId,
@@ -98,6 +103,11 @@ async function handleSpan(data: AgentSpanJobData): Promise<void> {
     agentDefinitionId = agentDef.id
   }
 
+  // Derive cost when the caller did not supply one. Non-SDK sources (n8n,
+  // Make, Zapier, OTLP exporters) report tokens but never costUsd; without
+  // this they would roll up as $0. An explicit costUsd always wins.
+  const effectiveCostUsd = costUsd ?? deriveCostUsd(data.model, inputTokens, outputTokens)
+
   const startMs = new Date(startedAt).getTime()
   const endMs = endedAt ? new Date(endedAt).getTime() : undefined
   const durationMs = endMs !== undefined ? endMs - startMs : undefined
@@ -134,7 +144,7 @@ async function handleSpan(data: AgentSpanJobData): Promise<void> {
     inputTokens,
     outputTokens,
     totalTokens: hasTokens ? spanTotalTokens : undefined,
-    costUsd,
+    costUsd: effectiveCostUsd,
     model: data.model,
     inputPreview: data.inputPreview,
     outputPreview: data.outputPreview,
@@ -155,7 +165,7 @@ async function handleSpan(data: AgentSpanJobData): Promise<void> {
     where: { id: runId },
     data: {
       totalTokens: { increment: spanTotalTokens },
-      totalCostUsd: { increment: costUsd ?? 0 },
+      totalCostUsd: { increment: effectiveCostUsd ?? 0 },
     },
   })
 }

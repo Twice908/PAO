@@ -1,0 +1,753 @@
+openapi: 3.1.0
+
+info:
+  title: PAO Ingest API
+  version: 0.1.0
+  summary: Ingest AI agent runs, spans, and OpenTelemetry traces into Pulse Agent Observe.
+  description: |
+    **Pulse Agent Observe (PAO)** is an observability layer for AI agents. It records
+    agent *runs* and the *spans* within them — LLM calls, tool calls, memory reads,
+    inter-agent messages — along with token usage, cost, and errors.
+
+    This document covers the **public ingest surface**: the endpoints a third-party
+    integration, automation platform, or agent framework calls to report telemetry.
+    Dashboard-only endpoints authenticated with a user session are out of scope.
+
+    ## Two ways in
+
+    | Endpoint | Use it when |
+    |---|---|
+    | `POST /ingest/agent-span` | You control the code or you are assembling a payload by hand (n8n, Make, Zapier, a webhook). |
+    | `POST /ingest/otlp/v1/traces` | You already emit OpenTelemetry. Point any OTLP exporter here and send nothing PAO-specific. |
+
+    Both share one API key and one processing pipeline.
+
+    ## Authentication
+
+    Every ingest request carries a project API key as a bearer token:
+
+    ```
+    Authorization: Bearer pk_live_...
+    ```
+
+    Keys are issued per project in the PAO dashboard. A key identifies the project
+    that telemetry is written to, so treat it as a write credential and keep it out
+    of client-side code.
+
+    ## Reporting a run
+
+    A run is three kinds of payload sharing one `runId`:
+
+    1. `run_start` — opens the run and names the task.
+    2. `span` — one per unit of work; repeat as many times as needed.
+    3. `run_end` — closes the run with a terminal status.
+
+    `runId` and `spanId` are **caller-generated**, so no pre-registration call is
+    needed. Any string is accepted — a UUID, or an identifier already meaningful in
+    your system such as a workflow execution ID.
+
+    Because the request body is an array, a whole run can be reported in a **single
+    call** after the fact. This is the recommended shape for automation platforms,
+    where each HTTP call costs an operation or task.
+
+    ## Cost
+
+    Supply `costUsd` if you have it. If you omit it but provide `model` with token
+    counts, PAO derives the cost from a built-in pricing table. An unrecognised
+    model leaves cost unset rather than recording a misleading `0`.
+
+    ## Delivery semantics
+
+    Ingest is asynchronous. A `202` means the batch was accepted and queued, not
+    that it is already queryable. Requests are validated fully before acceptance:
+    a batch either passes and is queued in full, or is rejected with a `400`
+    identifying the offending element — nothing is partially dropped behind a
+    success response.
+
+  contact:
+    name: PAO
+    url: https://github.com/Twice908/PAO
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: https://api.usepulse.dev
+    description: Production
+  - url: http://localhost:3001
+    description: Local development
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Ingest
+    description: Report agent telemetry.
+  - name: OpenTelemetry
+    description: OTLP-compatible trace ingest.
+  - name: System
+    description: Service health.
+
+paths:
+  /ingest/agent-span:
+    post:
+      operationId: ingestAgentSpans
+      tags: [Ingest]
+      summary: Report agent runs and spans
+      description: |
+        Accepts a batch of payloads describing one or more agent runs.
+
+        Send an array to report a whole run in one request. A single object is also
+        accepted and treated as a one-element batch, for clients that cannot express
+        a top-level JSON array.
+
+        Timestamps are ISO-8601 and may carry a UTC offset
+        (`2026-08-25T10:00:00+05:30`) as well as `Z`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              description: |
+                A batch of one or more payloads. A single bare object is also
+                accepted and treated as a one-element batch, for clients that
+                cannot express a top-level JSON array.
+              items:
+                $ref: '#/components/schemas/AgentSpanPayload'
+            examples:
+              completeRun:
+                summary: A whole run in one call
+                description: The recommended shape for automation platforms — one HTTP call per run.
+                value:
+                  - type: run_start
+                    runId: 7f3d1c2a-9b64-4e11-8a55-2c1f0e9d4b77
+                    task: Summarise inbound leads
+                    startedAt: '2026-08-25T10:00:00+05:30'
+                  - type: span
+                    runId: 7f3d1c2a-9b64-4e11-8a55-2c1f0e9d4b77
+                    spanId: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+                    spanType: llm_call
+                    name: OpenAI Chat Model
+                    model: gpt-4o-mini
+                    startedAt: '2026-08-25T10:00:01+05:30'
+                    endedAt: '2026-08-25T10:00:04+05:30'
+                    inputTokens: 1200
+                    outputTokens: 340
+                    status: success
+                  - type: span
+                    runId: 7f3d1c2a-9b64-4e11-8a55-2c1f0e9d4b77
+                    spanType: tool_call
+                    name: HTTP Request
+                    startedAt: '2026-08-25T10:00:04+05:30'
+                    endedAt: '2026-08-25T10:00:05+05:30'
+                    status: success
+                  - type: run_end
+                    runId: 7f3d1c2a-9b64-4e11-8a55-2c1f0e9d4b77
+                    startedAt: '2026-08-25T10:00:00+05:30'
+                    endedAt: '2026-08-25T10:00:05+05:30'
+                    status: completed
+              streamingRunStart:
+                summary: Open a run before the work begins
+                description: Use when spans are reported incrementally rather than in one batch.
+                value:
+                  - type: run_start
+                    runId: 7f3d1c2a-9b64-4e11-8a55-2c1f0e9d4b77
+                    task: Research competitor pricing
+                    agentName: ResearchAgent
+                    startedAt: '2026-08-25T10:00:00Z'
+              failedRun:
+                summary: A run that failed
+                value:
+                  - type: span
+                    runId: 7f3d1c2a-9b64-4e11-8a55-2c1f0e9d4b77
+                    spanId: 9f8e7d6c-5b4a-4392-8172-6a5b4c3d2e1f
+                    spanType: tool_call
+                    name: web_search
+                    startedAt: '2026-08-25T10:00:01Z'
+                    endedAt: '2026-08-25T10:00:02Z'
+                    status: error
+                    errorMessage: Search API rate limited
+                  - type: run_end
+                    runId: 7f3d1c2a-9b64-4e11-8a55-2c1f0e9d4b77
+                    startedAt: '2026-08-25T10:00:00Z'
+                    endedAt: '2026-08-25T10:00:02Z'
+                    status: failed
+                    errorMessage: Search API rate limited
+      responses:
+        '202':
+          description: Batch accepted and queued for processing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, accepted]
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  accepted:
+                    type: integer
+                    description: Number of payloads queued.
+                    examples: [4]
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /ingest/otlp/v1/traces:
+    post:
+      operationId: ingestOtlpTraces
+      tags: [OpenTelemetry]
+      summary: Report OpenTelemetry traces
+      description: |
+        An OTLP/HTTP trace receiver. Point any OpenTelemetry exporter at this URL to
+        report to PAO without writing PAO-specific code.
+
+        Accepts `application/x-protobuf` and `application/json`, both optionally
+        gzipped (`Content-Encoding: gzip`).
+
+        ### Configuring an exporter
+
+        ```
+        OTEL_EXPORTER_OTLP_ENDPOINT=https://api.usepulse.dev/ingest/otlp
+        OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer pk_live_...
+        ```
+
+        Exporters append `/v1/traces` to the endpoint themselves.
+
+        ### How traces become runs
+
+        OTLP has no concept of a run, so PAO derives one: a **root span** (a span
+        with no parent) becomes the run, and its descendants become spans within it.
+        The root is not also recorded as a child span, so its token counts are not
+        double-counted in the run total.
+
+        ### Attribute mapping
+
+        Span type is resolved from
+        [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/),
+        falling back to tool and model attributes and then the span name:
+
+        | Attribute | Maps to |
+        |---|---|
+        | `gen_ai.operation.name: chat` / `text_completion` | `llm_call` |
+        | `gen_ai.operation.name: execute_tool` | `tool_call` |
+        | `gen_ai.operation.name: invoke_agent` | `agent_message` |
+        | `gen_ai.operation.name: embeddings` / `retrieval` | `memory_read` |
+        | `gen_ai.request.model` | `model` |
+        | `gen_ai.usage.input_tokens` | `inputTokens` |
+        | `gen_ai.usage.output_tokens` | `outputTokens` |
+        | `gen_ai.agent.name`, `service.name` | `agentName` |
+        | span status `STATUS_CODE_ERROR` | `status: error` |
+
+        The GenAI conventions are still evolving. Deprecated spellings
+        (`gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`) and
+        OpenInference's `llm.*` attributes are also accepted, and **every** span
+        attribute is retained in the span's metadata — an unrecognised attribute is
+        never a reason to reject a span.
+
+        OTLP rarely carries cost, so cost is derived from the model and token counts.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        description: An OTLP `ExportTraceServiceRequest`.
+        content:
+          application/x-protobuf:
+            schema:
+              type: string
+              format: binary
+              description: Binary protobuf-encoded `ExportTraceServiceRequest`.
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OtlpExportTraceServiceRequest'
+            examples:
+              genAiSpan:
+                summary: A single LLM call
+                value:
+                  resourceSpans:
+                    - resource:
+                        attributes:
+                          - key: service.name
+                            value: {stringValue: research-agent}
+                      scopeSpans:
+                        - spans:
+                            - traceId: 0102030405060708090a0b0c0d0e0f10
+                              spanId: '0102030405060708'
+                              name: chat gpt-4o
+                              startTimeUnixNano: '1756108800000000000'
+                              endTimeUnixNano: '1756108803000000000'
+                              attributes:
+                                - key: gen_ai.operation.name
+                                  value: {stringValue: chat}
+                                - key: gen_ai.request.model
+                                  value: {stringValue: gpt-4o}
+                                - key: gen_ai.usage.input_tokens
+                                  value: {intValue: '1200'}
+                                - key: gen_ai.usage.output_tokens
+                                  value: {intValue: '340'}
+      responses:
+        '200':
+          description: |
+            Export accepted. Following the OTLP specification, spans that could not be
+            recorded are reported through `partialSuccess` on a successful response
+            rather than as an error.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [partialSuccess]
+                properties:
+                  partialSuccess:
+                    $ref: '#/components/schemas/OtlpPartialSuccess'
+              examples:
+                fullSuccess:
+                  summary: Everything accepted
+                  value: {partialSuccess: {}}
+                partialSuccess:
+                  summary: Some spans dropped
+                  value:
+                    partialSuccess:
+                      rejectedSpans: 2
+                      errorMessage: Spans missing a trace id, span id, or start timestamp were dropped
+        '400':
+          description: The payload could not be decoded as an OTLP trace export.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /health:
+    get:
+      operationId: getHealth
+      tags: [System]
+      summary: Service health
+      description: Liveness probe. Requires no authentication.
+      security: []
+      responses:
+        '200':
+          description: Service is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, ts]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+                  ts:
+                    type: string
+                    format: date-time
+        '503':
+          description: Service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      description: |
+        A project API key, issued in the PAO dashboard and sent as
+        `Authorization: Bearer pk_live_...`.
+
+  responses:
+    Unauthorized:
+      description: The API key is missing, malformed, or unknown.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            missing:
+              summary: No bearer token
+              value:
+                success: false
+                error:
+                  code: UNAUTHORIZED
+                  message: Missing or invalid API key
+            unknown:
+              summary: Key not recognised
+              value:
+                success: false
+                error:
+                  code: INVALID_KEY
+                  message: Invalid API key
+
+    ValidationError:
+      description: |
+        One or more payloads failed validation. No payload in the batch was queued.
+        `issues` identifies each problem by its position in the batch and the field
+        responsible.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
+          examples:
+            missingSpanType:
+              summary: A span missing a required field
+              value:
+                success: false
+                error:
+                  code: BAD_REQUEST
+                  message: One or more payloads failed validation
+                  issues:
+                    - index: 1
+                      field: spanType
+                      message: Required
+
+    RateLimited:
+      description: |
+        Too many requests for this API key. Batch multiple spans into a single
+        request rather than sending one request per span.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    SpanType:
+      type: string
+      description: The kind of work a span represents.
+      enum: [llm_call, tool_call, memory_read, agent_message, error]
+
+    AgentSpanPayload:
+      description: |
+        One telemetry event. The `type` field selects the variant, and each variant
+        accepts a different set of fields.
+      oneOf:
+        - $ref: '#/components/schemas/RunStart'
+        - $ref: '#/components/schemas/Span'
+        - $ref: '#/components/schemas/RunEnd'
+      discriminator:
+        propertyName: type
+        mapping:
+          run_start: '#/components/schemas/RunStart'
+          span: '#/components/schemas/Span'
+          run_end: '#/components/schemas/RunEnd'
+
+    RunStart:
+      type: object
+      title: run_start
+      description: Opens a run. Send once per run, before or alongside its spans.
+      required: [type, runId, startedAt]
+      properties:
+        type:
+          type: string
+          const: run_start
+        runId:
+          $ref: '#/components/schemas/RunId'
+        task:
+          type: string
+          description: Human-readable description of what the agent was asked to do.
+          examples: [Summarise inbound leads]
+        agentName:
+          $ref: '#/components/schemas/AgentName'
+        startedAt:
+          $ref: '#/components/schemas/Timestamp'
+        endedAt:
+          $ref: '#/components/schemas/Timestamp'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+
+    Span:
+      type: object
+      title: span
+      description: One unit of work within a run.
+      required: [type, runId, spanType, name, startedAt]
+      properties:
+        type:
+          type: string
+          const: span
+        runId:
+          $ref: '#/components/schemas/RunId'
+        spanId:
+          type: string
+          minLength: 1
+          description: |
+            Unique identifier for this span. Optional — when omitted, PAO generates
+            one. Supply your own if you need to reference the span as a
+            `parentSpanId`.
+        parentSpanId:
+          type: string
+          minLength: 1
+          description: The `spanId` of the enclosing span, for nested work.
+        spanType:
+          $ref: '#/components/schemas/SpanType'
+        name:
+          type: string
+          minLength: 1
+          description: Human-readable label, shown in the span tree.
+          examples: [OpenAI Chat Model]
+        model:
+          type: string
+          description: |
+            Model identifier for LLM calls. Used to derive cost when `costUsd` is
+            omitted. Vendor prefixes and date suffixes are understood
+            (`anthropic/claude-sonnet-4-20250514`).
+          examples: [gpt-4o-mini]
+        agentName:
+          $ref: '#/components/schemas/AgentName'
+        startedAt:
+          $ref: '#/components/schemas/Timestamp'
+        endedAt:
+          $ref: '#/components/schemas/Timestamp'
+        inputTokens:
+          type: integer
+          minimum: 0
+          description: Prompt tokens consumed.
+        outputTokens:
+          type: integer
+          minimum: 0
+          description: Completion tokens produced.
+        costUsd:
+          type: number
+          minimum: 0
+          description: |
+            Cost in USD. Omit to let PAO derive it from `model` and token counts.
+            An explicit value always takes precedence.
+        inputPreview:
+          type: string
+          maxLength: 500
+          description: Truncated snapshot of the input, for debugging.
+        outputPreview:
+          type: string
+          maxLength: 500
+          description: Truncated snapshot of the output, for debugging.
+        status:
+          type: string
+          description: Outcome of this span. Span-level statuses only.
+          enum: [success, error, timeout]
+        errorMessage:
+          type: string
+          description: Failure detail, when `status` is `error` or `timeout`.
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+
+    RunEnd:
+      type: object
+      title: run_end
+      description: |
+        Closes a run and sets its terminal status. Token and cost totals are
+        recomputed from the run's spans.
+      required: [type, runId, startedAt]
+      properties:
+        type:
+          type: string
+          const: run_end
+        runId:
+          $ref: '#/components/schemas/RunId'
+        task:
+          type: string
+          description: Run description, if not already supplied on `run_start`.
+        agentName:
+          $ref: '#/components/schemas/AgentName'
+        startedAt:
+          $ref: '#/components/schemas/Timestamp'
+        endedAt:
+          $ref: '#/components/schemas/Timestamp'
+        status:
+          type: string
+          description: |
+            Terminal outcome of the run. Run-level statuses only — a span status such
+            as `success` is rejected here. Defaults to `completed`.
+          enum: [completed, failed, interrupted]
+        errorMessage:
+          type: string
+          description: Failure detail, when `status` is `failed`.
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+
+    RunId:
+      type: string
+      minLength: 1
+      description: |
+        Caller-generated identifier tying a run's payloads together. Any non-empty
+        string — a UUID, or an ID from your own system such as a workflow execution
+        ID.
+      examples: [7f3d1c2a-9b64-4e11-8a55-2c1f0e9d4b77]
+
+    AgentName:
+      type: string
+      description: |
+        Name of the agent performing the work. Agents are tracked per project, so
+        reusing a name groups runs under the same agent.
+      examples: [ResearchAgent]
+
+    Timestamp:
+      type: string
+      description: |
+        ISO-8601 datetime. A UTC offset is accepted as well as `Z`, so the native
+        output of automation platforms can be passed through unchanged.
+      examples: ['2026-08-25T10:00:00Z', '2026-08-25T10:00:00+05:30']
+
+    Metadata:
+      type: object
+      additionalProperties: true
+      description: Arbitrary JSON stored alongside the record and shown in the dashboard.
+
+    Error:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          const: false
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable, machine-readable error identifier.
+              examples: [UNAUTHORIZED, INVALID_KEY, BAD_REQUEST]
+            message:
+              type: string
+              description: Human-readable explanation.
+
+    ValidationError:
+      type: object
+      description: An error response carrying per-field validation detail.
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          const: false
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              const: BAD_REQUEST
+            message:
+              type: string
+            issues:
+              type: array
+              description: One entry per validation failure.
+              items:
+                type: object
+                properties:
+                  index:
+                    type: [integer, 'null']
+                    description: Position of the offending payload within the batch.
+                  field:
+                    type: [string, 'null']
+                    description: Field responsible for the failure.
+                  message:
+                    type: string
+                    description: What was wrong with it.
+
+    OtlpPartialSuccess:
+      type: object
+      description: |
+        Empty when every span was accepted. Otherwise reports how many were dropped
+        and why.
+      properties:
+        rejectedSpans:
+          type: integer
+          minimum: 0
+          description: Number of spans that could not be recorded.
+        errorMessage:
+          type: string
+          description: Why those spans were dropped.
+
+    OtlpExportTraceServiceRequest:
+      type: object
+      description: |
+        The JSON encoding of OTLP's `ExportTraceServiceRequest`, as defined by the
+        [OpenTelemetry protocol](https://opentelemetry.io/docs/specs/otlp/). Trace
+        and span IDs are hex strings. `snake_case` field names are accepted
+        alongside `camelCase`. Only the fields PAO reads are described here.
+      properties:
+        resourceSpans:
+          type: array
+          items:
+            type: object
+            properties:
+              resource:
+                type: object
+                description: Attributes applied to every span beneath it, such as `service.name`.
+                properties:
+                  attributes:
+                    $ref: '#/components/schemas/OtlpAttributes'
+              scopeSpans:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    spans:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/OtlpSpan'
+
+    OtlpSpan:
+      type: object
+      description: |
+        A span must carry `traceId`, `spanId`, and `startTimeUnixNano` to be
+        recorded; spans missing any of them are counted in `partialSuccess`.
+      properties:
+        traceId:
+          type: string
+          description: Hex-encoded trace ID. Becomes the PAO `runId`.
+          examples: [0102030405060708090a0b0c0d0e0f10]
+        spanId:
+          type: string
+          description: Hex-encoded span ID.
+          examples: ['0102030405060708']
+        parentSpanId:
+          type: string
+          description: Hex-encoded parent span ID. A span without one is treated as the run's root.
+        name:
+          type: string
+        startTimeUnixNano:
+          type: string
+          description: Start time in nanoseconds since the Unix epoch, as a string.
+          examples: ['1756108800000000000']
+        endTimeUnixNano:
+          type: string
+          description: End time in nanoseconds since the Unix epoch, as a string.
+        attributes:
+          $ref: '#/components/schemas/OtlpAttributes'
+        status:
+          type: object
+          properties:
+            code:
+              type: integer
+              description: '0 = unset, 1 = ok, 2 = error.'
+              enum: [0, 1, 2]
+            message:
+              type: string
+
+    OtlpAttributes:
+      type: array
+      description: OTLP key/value attributes.
+      items:
+        type: object
+        properties:
+          key:
+            type: string
+          value:
+            type: object
+            description: An OTLP `AnyValue` — exactly one of the following is set.
+            properties:
+              stringValue: {type: string}
+              boolValue: {type: boolean}
+              intValue:
+                type: [string, integer]
+                description: int64, encoded as a string in protobuf JSON.
+              doubleValue: {type: number}
+              arrayValue: {type: object}
+              kvlistValue: {type: object}

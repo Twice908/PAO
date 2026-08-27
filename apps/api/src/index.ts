@@ -7,6 +7,7 @@ import { registerRateLimit } from './plugins/rate-limit'
 import { healthRoutes } from './routes/health'
 import { agentSpanRoutes } from './routes/ingest/agent-span'
 import { agentsStreamRoutes } from './routes/agents-stream'
+import { otlpTraceRoutes } from './routes/ingest/otlp-traces'
 
 async function bootstrap(): Promise<void> {
   const app = Fastify({
@@ -22,6 +23,7 @@ async function bootstrap(): Promise<void> {
   await app.register(healthRoutes)
   await app.register(agentSpanRoutes)
   await app.register(agentsStreamRoutes)
+  await app.register(otlpTraceRoutes)
 
   const address = await app.listen({ port: parseInt(env.PORT), host: '0.0.0.0' })
   app.log.info(`PAO API server listening at ${address}`)
